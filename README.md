@@ -1,3 +1,4 @@
+
 # 🛡️ ChurnShield — Customer Churn Prediction Platform
 
 > **ML Coursework Project** | Telecom Customer Churn Analysis for the Indian Market  
@@ -127,3 +128,4 @@ Customer_Churn_Prediction/
 ## 📚 Dataset
 [Telco Customer Churn — Kaggle](https://www.kaggle.com/datasets/blastchar/telco-customer-churn)  
 7,043 customers · 21 features · ~26% churn rate
+
