@@ -16,6 +16,13 @@ import pandas as pd, numpy as np
 import plotly.graph_objects as go
 from utils.data_loader import load_main_data, load_model, load_scaler, load_feature_names, models_trained
 
+# ── SHAP (optional — gracefully skip if not installed) ──────────────────────
+try:
+    import shap
+    _HAS_SHAP = True
+except ImportError:
+    _HAS_SHAP = False
+
 def get_risk(prob):
     if prob >= .65: return "HIGH RISK", "badge-high", "🔴"
     elif prob >= .35: return "MEDIUM RISK", "badge-med", "🟡"
@@ -76,20 +83,24 @@ if match.empty:
 customer = match.iloc[0]
 st.success(f"✅  Found: **{customer['customerID']}**")
 
-drop_cols = ['customerID','Churn','tenure_group','RFM_Segment','recency','frequency','monetary','R_Score','F_Score','M_Score']
+drop_cols = ['customerID','Churn','tenure_group','RFM_Segment','recency','frequency',
+             'monetary','R_Score','F_Score','M_Score']
 row = customer.drop([c for c in drop_cols if c in customer.index], errors='ignore')
 row_df = pd.DataFrame([row])
 row_enc = pd.get_dummies(row_df).reindex(columns=feature_names, fill_value=0)
-prob = model.predict_proba(scaler.transform(row_enc))[0][1]
+row_scaled = scaler.transform(row_enc)
+prob = model.predict_proba(row_scaled)[0][1]
 label, badge_cls, emoji = get_risk(prob)
 clv = customer['MonthlyCharges'] * customer['tenure'] * .25 * 83
 
+# ── Top Metrics ─────────────────────────────────────────────────────────────
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Churn Probability", f"{prob:.1%}")
 m2.metric("Customer Lifetime Value", f"₹{clv:,.0f}")
 m3.metric("Tenure", f"{int(customer['tenure'])} months")
 m4.metric("Monthly Charges", f"₹{customer['MonthlyCharges']*83:.0f}")
 
+# ── Gauge ───────────────────────────────────────────────────────────────────
 gauge_col = '#f43f5e' if prob>.65 else '#f59e0b' if prob>.35 else '#22c55e'
 fig = go.Figure(go.Indicator(
     mode="gauge+number",
@@ -107,17 +118,143 @@ fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', height=280,
                   font=dict(family='Inter'), margin=dict(l=40,r=40,t=40,b=10))
 st.plotly_chart(fig, use_container_width=True)
 
+# ── Customer Profile (FIXED) ─────────────────────────────────────────────────
+st.markdown("---")
 st.markdown("### 👤 Customer Profile")
+
 profile_cols = ['gender','SeniorCitizen','Partner','Dependents','tenure','Contract',
                 'InternetService','MonthlyCharges','TotalCharges','PaymentMethod']
 existing = [c for c in profile_cols if c in customer.index]
-half = len(existing)//2
+
+profile_data = []
+for c in existing:
+    val = customer[c]
+    # format numbers nicely
+    if isinstance(val, float):
+        val = f"{val:.2f}"
+    elif isinstance(val, (int, np.integer)):
+        val = str(int(val))
+    else:
+        val = str(val)
+    profile_data.append({"Feature": c, "Value": val})
+
+profile_df = pd.DataFrame(profile_data)
+half = len(profile_df) // 2
+
 p1, p2 = st.columns(2)
 with p1:
-    st.dataframe(pd.DataFrame({'Feature':existing[:half],'Value':[str(customer[c]) for c in existing[:half]]}).set_index('Feature'), use_container_width=True)
+    st.markdown("**Account Details**")
+    st.table(profile_df.iloc[:half].set_index("Feature"))
 with p2:
-    st.dataframe(pd.DataFrame({'Feature':existing[half:],'Value':[str(customer[c]) for c in existing[half:]]}).set_index('Feature'), use_container_width=True)
+    st.markdown("**Service Details**")
+    st.table(profile_df.iloc[half:].set_index("Feature"))
 
+# ── SHAP Explainability ──────────────────────────────────────────────────────
+st.markdown("---")
+st.markdown("### 🧠 Why is this customer at risk?")
+st.caption("SHAP values show which features push the churn probability up (red) or down (blue).")
+
+if not _HAS_SHAP:
+    st.warning("SHAP not installed. Run: `pip install shap` then restart the app.")
+else:
+    try:
+        with st.spinner("Calculating SHAP values..."):
+            # Use TreeExplainer for tree models, fallback to LinearExplainer
+            model_type = type(model).__name__
+            if model_type in ['RandomForestClassifier','XGBClassifier',
+                               'LGBMClassifier','DecisionTreeClassifier',
+                               'VotingClassifier']:
+                # For voting ensemble or tree models
+                try:
+                    explainer = shap.TreeExplainer(model)
+                    shap_vals = explainer.shap_values(row_enc)
+                    # For binary classifiers shap_values returns list [class0, class1]
+                    if isinstance(shap_vals, list):
+                        sv = shap_vals[1][0]
+                    else:
+                        sv = shap_vals[0]
+                except Exception:
+                    explainer = shap.Explainer(model, row_enc)
+                    shap_vals = explainer(row_enc)
+                    sv = shap_vals.values[0]
+                    if sv.ndim > 1:
+                        sv = sv[:, 1]
+            else:
+                explainer = shap.LinearExplainer(model, row_enc)
+                shap_vals = explainer.shap_values(row_enc)
+                sv = shap_vals[0] if not isinstance(shap_vals, list) else shap_vals[1][0]
+
+        # Build top-N bar chart
+        shap_df = pd.DataFrame({'Feature': feature_names, 'SHAP': sv})
+        shap_df['abs'] = shap_df['SHAP'].abs()
+        shap_df = shap_df.sort_values('abs', ascending=False).head(12)
+        shap_df = shap_df.sort_values('SHAP', ascending=True)
+
+        colors = ['#f43f5e' if v > 0 else '#6366f1' for v in shap_df['SHAP']]
+
+        fig_shap = go.Figure(go.Bar(
+            x=shap_df['SHAP'],
+            y=shap_df['Feature'],
+            orientation='h',
+            marker_color=colors,
+            text=[f"{v:+.3f}" for v in shap_df['SHAP']],
+            textposition='outside',
+            textfont=dict(color='#94a3b8', size=11)
+        ))
+        fig_shap.update_layout(
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(17,24,39,.85)',
+            font=dict(color='#94a3b8', family='Inter'),
+            margin=dict(l=20, r=80, t=30, b=20),
+            height=420,
+            xaxis=dict(
+                title='SHAP value (impact on churn probability)',
+                gridcolor='#1e2840',
+                zerolinecolor='#4a5568',
+                zerolinewidth=1.5
+            ),
+            yaxis=dict(gridcolor='#1e2840'),
+            showlegend=False
+        )
+
+        # Add legend annotation
+        fig_shap.add_annotation(
+            x=shap_df['SHAP'].max() * 0.6, y=1,
+            text="🔴 Increases churn risk",
+            showarrow=False, font=dict(color='#f43f5e', size=11),
+            xref='x', yref='paper'
+        )
+        fig_shap.add_annotation(
+            x=shap_df['SHAP'].min() * 0.6, y=1,
+            text="🔵 Decreases churn risk",
+            showarrow=False, font=dict(color='#6366f1', size=11),
+            xref='x', yref='paper'
+        )
+
+        st.plotly_chart(fig_shap, use_container_width=True)
+
+        # Top 3 reasons in plain English
+        top_risk = shap_df[shap_df['SHAP'] > 0].sort_values('SHAP', ascending=False).head(3)
+        top_safe = shap_df[shap_df['SHAP'] < 0].sort_values('SHAP').head(2)
+
+        if not top_risk.empty:
+            st.markdown("**Top reasons driving churn risk:**")
+            for _, r in top_risk.iterrows():
+                feat_val = row_enc[r['Feature']].values[0] if r['Feature'] in row_enc.columns else 'N/A'
+                st.markdown(f"- 🔴 **{r['Feature']}** = `{feat_val}` &nbsp; (impact: +{r['SHAP']:.3f})")
+
+        if not top_safe.empty:
+            st.markdown("**Factors reducing churn risk:**")
+            for _, r in top_safe.iterrows():
+                feat_val = row_enc[r['Feature']].values[0] if r['Feature'] in row_enc.columns else 'N/A'
+                st.markdown(f"- 🔵 **{r['Feature']}** = `{feat_val}` &nbsp; (impact: {r['SHAP']:.3f})")
+
+    except Exception as e:
+        st.error(f"SHAP calculation failed: {e}")
+        st.info("This can happen with Voting Ensemble models. Try re-running `python train_models.py`.")
+
+# ── Recommended Retention Action ────────────────────────────────────────────
+st.markdown("---")
 st.markdown("### 🎯 Recommended Retention Action")
 s_name, s_reason, s_cost, s_lift = strategy(prob, clv)
 st.markdown(f"""

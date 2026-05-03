@@ -1,7 +1,7 @@
 ,auc_roc,avg_precision,accuracy,precision_churn,recall_churn,f1_churn
 Logistic Regression,0.7908,0.5168,0.6849,0.4712,0.9,0.6186
 Decision Tree,0.7878,0.5032,0.6764,0.4634,0.8875,0.6089
-Random Forest,0.8023,0.553,0.6849,0.4705,0.8775,0.6126
+Random Forest,0.8024,0.5535,0.6842,0.47,0.88,0.6127
 XGBoost,0.7881,0.5206,0.6941,0.4752,0.7425,0.5795
 LightGBM,0.786,0.51,0.687,0.4695,0.79,0.589
-Voting Ensemble,0.7949,0.5379,0.6877,0.4708,0.8075,0.5948
+Voting Ensemble,0.795,0.5378,0.6884,0.4716,0.81,0.5961
