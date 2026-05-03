@@ -22,7 +22,7 @@ ChurnShield answers three business-critical questions:
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/cnread07/Customer_Churn_Prediction.git
+git clone https://github.com/siddhibirje/ChurnShield.git
 cd Customer_Churn_Prediction
 ```
 
